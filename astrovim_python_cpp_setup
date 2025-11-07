@@ -1,0 +1,283 @@
+###############################################################
+# 0) SYSTEM DEPENDENCIES
+###############################################################
+sudo apt update
+sudo apt install -y curl git g++ cmake bear python3 python3-pip python3-venv ninja-build unzip clangd-18
+sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-18 100
+pip3 install --user basedpyright
+
+
+###############################################################
+# 1) INSTALL LATEST NEOVIM (AUTO-DETECT)
+###############################################################
+LATEST=$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest \
+  | grep linux64.tar.gz \
+  | cut -d '"' -f 4)
+
+wget "$LATEST" -O nvim-linux64.tar.gz
+sudo tar -C /opt -xzf nvim-linux64.tar.gz
+sudo ln -sf /opt/nvim-linux64/bin/nvim /usr/local/bin/nvim
+rm -f nvim-linux64.tar.gz
+
+
+###############################################################
+# 2) INSTALL ASTRONVIM THE RIGHT WAY (TEMPLATE)
+###############################################################
+rm -rf ~/.config/nvim ~/.local/share/nvim ~/.cache/nvim
+git clone --depth 1 https://github.com/AstroNvim/template ~/.config/nvim
+rm -rf ~/.config/nvim/.git
+
+
+###############################################################
+# 3) CREATE DIRECTORIES
+###############################################################
+mkdir -p ~/.config/nvim/lua/plugins
+mkdir -p ~/.config/nvim/lua/user
+mkdir -p ~/.config/clangd
+mkdir -p ~/.config/nvim/after/syntax
+
+
+###############################################################
+# 4) GLOBAL CLANGD CONFIG (VSCode-LIKE, NO BUILD NEEDED)
+###############################################################
+cat > ~/.config/clangd/config.yaml <<'EOF'
+CompileFlags:
+  Add: ["-std=c++20","-I/usr/include"]
+FallbackFlags: ["-std=c++20","-I/usr/include"]
+Clangd:
+  BackgroundIndex: Yes
+  AllScopesCompletion: Yes
+  CompletionStyle: Detailed
+  HeaderInsertion: Never
+  SuggestMissingIncludes: Yes
+  EnableConfig: Yes
+EOF
+
+
+###############################################################
+# 5) LSP CONFIG: CLANGD + PYTHON (BASEDPYRIGHT + CONDA)
+###############################################################
+cat > ~/.config/nvim/lua/plugins/lsp_all.lua <<'EOF'
+return {
+  {
+    "neovim/nvim-lspconfig",
+    dependencies = { "hrsh7th/cmp-nvim-lsp" },
+    opts = function()
+      local lspconfig = require("lspconfig")
+      local cmp_caps = require("cmp_nvim_lsp").default_capabilities()
+
+      -- C/C++
+      lspconfig.clangd.setup({
+        capabilities = cmp_caps,
+        cmd = {
+          "clangd",
+          "--background-index",
+          "--all-scopes-completion",
+          "--completion-style=detailed",
+          "--header-insertion=never",
+          "--suggest-missing-includes",
+          "--enable-config",
+          "--offset-encoding=utf-16",
+        },
+      })
+
+      -- Detect conda/venv python
+      local function detect_env()
+        local conda = os.getenv("CONDA_PREFIX")
+        if conda then
+          return {
+            python = conda .. "/bin/python",
+            venvPath = vim.fn.fnamemodify(conda, ":h"),
+            venv = vim.fn.fnamemodify(conda, ":t"),
+          }
+        end
+        local venv = os.getenv("VIRTUAL_ENV")
+        if venv then
+          return {
+            python = venv .. "/bin/python",
+            venvPath = vim.fn.fnamemodify(venv, ":h"),
+            venv = vim.fn.fnamemodify(venv, ":t"),
+          }
+        end
+        return { python = vim.fn.exepath("python3") }
+      end
+
+      local py = detect_env()
+
+      -- Python
+      lspconfig.basedpyright.setup({
+        capabilities = cmp_caps,
+        settings = {
+          python = {
+            pythonPath = py.python,
+            venvPath = py.venvPath,
+            venv = py.venv,
+            analysis = {
+              autoImportCompletions = true,
+              autoSearchPaths = true,
+              diagnosticMode = "workspace",
+              useLibraryCodeForTypes = true,
+            },
+          },
+        },
+      })
+    end,
+  },
+}
+EOF
+
+
+###############################################################
+# 6) CMP (VSCODE-STYLE AUTOCOMPLETE)
+###############################################################
+cat > ~/.config/nvim/lua/plugins/cmp.lua <<'EOF'
+return {
+  "hrsh7th/nvim-cmp",
+  dependencies = {
+    "hrsh7th/cmp-nvim-lsp",
+    "hrsh7th/cmp-path",
+    "hrsh7th/cmp-buffer",
+    "L3MON4D3/LuaSnip",
+    "onsails/lspkind.nvim",
+  },
+  opts = function(_, opts)
+    local cmp = require("cmp")
+    local lspkind = require("lspkind")
+    opts.sources = cmp.config.sources({
+      { name = "nvim_lsp", priority = 1000 },
+      { name = "path", priority = 700 },
+      { name = "buffer", priority = 300 },
+    })
+    opts.mapping = cmp.mapping.preset.insert({
+      ["<CR>"] = cmp.mapping.confirm({ select = true }),
+    })
+    opts.formatting = {
+      format = lspkind.cmp_format({ mode = "symbol_text" }),
+    }
+    opts.experimental = { ghost_text = true }
+    return opts
+  end,
+}
+EOF
+
+
+###############################################################
+# 7) TREESITTER + THEMES + C++ EXTENSIONS
+###############################################################
+cat > ~/.config/nvim/lua/plugins/ui_cpp_py.lua <<'EOF'
+return {
+  {
+    "nvim-treesitter/nvim-treesitter",
+    opts = {
+      ensure_installed = { "cpp","c","python","comment","regex","json","lua" },
+      highlight = { enable = true },
+      indent = { enable = true },
+    },
+  },
+  { "p00f/clangd_extensions.nvim", config = function() require("clangd_extensions").setup() end },
+  { "Mofiqul/vscode.nvim", priority = 1000,
+    config = function() require("vscode").setup({}) vim.cmd("colorscheme vscode") end },
+}
+EOF
+
+
+###############################################################
+# 8) ASIO EXTRA SYNTAX
+###############################################################
+cat > ~/.config/nvim/after/syntax/cpp.vim <<'EOF'
+syn keyword cppAsio ASIO_NODISCARD ASIO_INITFN_RESULT_TYPE ASIO_CONSTEXPR ASIO_DEFAULT_COMPLETION_TOKEN_TYPE
+hi def link cppAsio Keyword
+EOF
+
+
+###############################################################
+# 9) FIXED FLOATING RUNNER (NO AUTO-CLOSE)
+###############################################################
+cat > ~/.config/nvim/lua/user/runner.lua <<'EOF'
+local M = {}
+
+local function detect_python()
+  local v = os.getenv("VIRTUAL_ENV")
+  if v then return v .. "/bin/python" end
+  local c = os.getenv("CONDA_PREFIX")
+  if c then return c .. "/bin/python" end
+  local ex = vim.fn.exepath("python3")
+  if ex ~= "" then return ex end
+  return "python3"
+end
+
+local function create_float_term(cmd)
+  local opts = {
+    relative = "editor",
+    width = math.floor(vim.o.columns * 0.9),
+    height = math.floor(vim.o.lines * 0.9),
+    row = math.floor(vim.o.lines * 0.05),
+    col = math.floor(vim.o.columns * 0.05),
+    border = "rounded",
+  }
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_open_win(buf, true, opts)
+
+  vim.fn.termopen(cmd)
+
+  vim.keymap.set("t", "<Esc>", [[<C-\><C-n>:q<CR>]], {
+    buffer = buf,
+    silent = true,
+  })
+end
+
+local function build_cmd()
+  local file = vim.fn.expand("%:p")
+  local ext = vim.fn.expand("%:e")
+
+  if ext == "cpp" or ext == "cc" or ext == "cxx" then
+    return string.format('sh -lc \'g++ "%s" -std=c++20 -O2 -Wall -Wextra -o /tmp/a.out && /tmp/a.out\'', file)
+  elseif ext == "c" then
+    return string.format('sh -lc \'gcc "%s" -O2 -Wall -Wextra -o /tmp/a.out && /tmp/a.out\'', file)
+  elseif ext == "py" then
+    return string.format('%s "%s"', detect_python(), file)
+  else
+    return nil
+  end
+end
+
+function M.run_float()
+  local cmd = build_cmd()
+  if cmd then create_float_term(cmd) end
+end
+
+function M.run_float_interactive()
+  local cmd = build_cmd()
+  if cmd then create_float_term(cmd) end
+end
+
+return M
+EOF
+
+
+###############################################################
+# 10) KEYBINDINGS (SPACE+r, SPACE+R, CTRL+r)
+###############################################################
+cat > ~/.config/nvim/lua/plugins/runner_keys.lua <<'EOF'
+return {
+  {
+    "AstroNvim/astrocore",
+    opts = function(_, opts)
+      local runner = require("user.runner")
+      opts.mappings = opts.mappings or {}
+      opts.mappings.n = opts.mappings.n or {}
+      opts.mappings.n["<leader>r"] = { function() runner.run_float() end, desc = "Run File" }
+      opts.mappings.n["<leader>R"] = { function() runner.run_float_interactive() end, desc = "Run Interactive" }
+      opts.mappings.n["<C-r>"]    = { function() runner.run_float() end, desc = "Run File" }
+      return opts
+    end,
+  },
+}
+EOF
+
+
+###############################################################
+# 11) SYNC EVERYTHING
+###############################################################
+nvim --headless "+Lazy! sync" +qa
+nvim --headless "+TSUpdate" +qa
