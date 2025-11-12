@@ -1,45 +1,54 @@
-###############################################################
-# 0) SYSTEM DEPENDENCIES
-###############################################################
-sudo apt update
-sudo apt install -y curl git g++ cmake bear python3 python3-pip python3-venv ninja-build unzip clangd-18
+#!/usr/bin/env bash
+# =============================================================================
+# 🚀 ULTIMATE ONE-FILE INSTALLER — AstroNvim IDE (C++ + Python) + Floating Terminal System
+# Option D terminal manager (panel+preview, numeric picker, telescope)
+# Fixes:
+#  - <Space>p peek uses robust lspsaga wrapper
+#  - Panel j/k never enter terminals; preview is unfocusable
+#  - l = preview only, Enter = open (panel closes but remembered), Alt+o returns to panel
+# =============================================================================
+set -e
+
+echo "==> Updating system..."
+sudo apt update -y
+
+echo "==> Installing dependencies..."
+sudo apt install -y \
+  curl git g++ gcc cmake bear python3 python3-pip python3-venv \
+  ninja-build unzip ripgrep fd-find jq ipython3 lldb gdb
+
+echo "==> Installing clangd-18..."
+sudo apt install -y clangd-18
 sudo update-alternatives --install /usr/bin/clangd clangd /usr/bin/clangd-18 100
-pip3 install --user basedpyright
 
+echo "==> Installing Python tooling (LSP + debug)..."
+pip3 install --user basedpyright ipykernel debugpy
 
-###############################################################
-# 1) INSTALL LATEST NEOVIM (AUTO-DETECT)
-###############################################################
-LATEST=$(curl -s https://api.github.com/repos/neovim/neovim/releases/latest \
-  | grep linux64.tar.gz \
-  | cut -d '"' -f 4)
+# -----------------------------------------------------------------------------
+# Neovim v0.11.4 AppImage (stable)
+# -----------------------------------------------------------------------------
+echo "==> Installing Neovim AppImage (v0.11.4)..."
+sudo rm -f /usr/local/bin/nvim
+curl -L --fail https://github.com/neovim/neovim/releases/download/v0.11.4/nvim-linux-x86_64.AppImage -o nvim.AppImage
+file nvim.AppImage | grep -q "AppImage" || { echo "❌ Invalid AppImage download"; exit 1; }
+chmod +x nvim.AppImage
+sudo mv nvim.AppImage /usr/local/bin/nvim
+echo "✅ Neovim:"
+nvim --version | head -n 3
 
-wget "$LATEST" -O nvim-linux64.tar.gz
-sudo tar -C /opt -xzf nvim-linux64.tar.gz
-sudo ln -sf /opt/nvim-linux64/bin/nvim /usr/local/bin/nvim
-rm -f nvim-linux64.tar.gz
-
-
-###############################################################
-# 2) INSTALL ASTRONVIM THE RIGHT WAY (TEMPLATE)
-###############################################################
+# -----------------------------------------------------------------------------
+# AstroNvim base
+# -----------------------------------------------------------------------------
+echo "==> Installing AstroNvim..."
 rm -rf ~/.config/nvim ~/.local/share/nvim ~/.cache/nvim
 git clone --depth 1 https://github.com/AstroNvim/template ~/.config/nvim
 rm -rf ~/.config/nvim/.git
 
+mkdir -p ~/.config/nvim/lua/plugins ~/.config/nvim/lua/user ~/.config/clangd
 
-###############################################################
-# 3) CREATE DIRECTORIES
-###############################################################
-mkdir -p ~/.config/nvim/lua/plugins
-mkdir -p ~/.config/nvim/lua/user
-mkdir -p ~/.config/clangd
-mkdir -p ~/.config/nvim/after/syntax
-
-
-###############################################################
-# 4) GLOBAL CLANGD CONFIG (VSCode-LIKE, NO BUILD NEEDED)
-###############################################################
+# -----------------------------------------------------------------------------
+# clangd config
+# -----------------------------------------------------------------------------
 cat > ~/.config/clangd/config.yaml <<'EOF'
 CompileFlags:
   Add: ["-std=c++20","-I/usr/include"]
@@ -53,10 +62,9 @@ Clangd:
   EnableConfig: Yes
 EOF
 
-
-###############################################################
-# 5) LSP CONFIG: CLANGD + PYTHON (BASEDPYRIGHT + CONDA)
-###############################################################
+# -----------------------------------------------------------------------------
+# LSP + cmp + robust peek wrapper
+# -----------------------------------------------------------------------------
 cat > ~/.config/nvim/lua/plugins/lsp_all.lua <<'EOF'
 return {
   {
@@ -64,220 +72,794 @@ return {
     dependencies = { "hrsh7th/cmp-nvim-lsp" },
     opts = function()
       local lspconfig = require("lspconfig")
-      local cmp_caps = require("cmp_nvim_lsp").default_capabilities()
-
+      local caps = require("cmp_nvim_lsp").default_capabilities()
       -- C/C++
       lspconfig.clangd.setup({
-        capabilities = cmp_caps,
+        capabilities = caps,
         cmd = {
-          "clangd",
-          "--background-index",
-          "--all-scopes-completion",
-          "--completion-style=detailed",
-          "--header-insertion=never",
-          "--suggest-missing-includes",
-          "--enable-config",
-          "--offset-encoding=utf-16",
+          "clangd","--background-index","--all-scopes-completion",
+          "--completion-style=detailed","--header-insertion=never",
+          "--suggest-missing-includes","--enable-config","--offset-encoding=utf-16",
         },
       })
-
-      -- Detect conda/venv python
-      local function detect_env()
-        local conda = os.getenv("CONDA_PREFIX")
-        if conda then
-          return {
-            python = conda .. "/bin/python",
-            venvPath = vim.fn.fnamemodify(conda, ":h"),
-            venv = vim.fn.fnamemodify(conda, ":t"),
-          }
-        end
-        local venv = os.getenv("VIRTUAL_ENV")
-        if venv then
-          return {
-            python = venv .. "/bin/python",
-            venvPath = vim.fn.fnamemodify(venv, ":h"),
-            venv = vim.fn.fnamemodify(venv, ":t"),
-          }
-        end
-        return { python = vim.fn.exepath("python3") }
-      end
-
-      local py = detect_env()
-
       -- Python
+      local function detect_py()
+        local v = os.getenv("VIRTUAL_ENV"); if v and #v > 0 then return v.."/bin/python" end
+        local c = os.getenv("CONDA_PREFIX"); if c and #c > 0 then return c.."/bin/python" end
+        return vim.fn.exepath("python3")
+      end
       lspconfig.basedpyright.setup({
-        capabilities = cmp_caps,
-        settings = {
-          python = {
-            pythonPath = py.python,
-            venvPath = py.venvPath,
-            venv = py.venv,
-            analysis = {
-              autoImportCompletions = true,
-              autoSearchPaths = true,
-              diagnosticMode = "workspace",
-              useLibraryCodeForTypes = true,
-            },
-          },
-        },
+        capabilities = caps,
+        settings = { python = { pythonPath = detect_py() } },
       })
+    end,
+  },
+  {
+    "hrsh7th/nvim-cmp",
+    dependencies = {
+      "hrsh7th/cmp-nvim-lsp","hrsh7th/cmp-path","hrsh7th/cmp-buffer",
+      "L3MON4D3/LuaSnip","onsails/lspkind.nvim",
+    },
+    opts = function(_, o)
+      local cmp = require("cmp")
+      local lspkind = require("lspkind")
+      o.sources = cmp.config.sources({
+        { name = "nvim_lsp", priority = 1000 },
+        { name = "path",     priority = 700 },
+        { name = "buffer",   priority = 300 },
+      })
+      o.formatting = { format = lspkind.cmp_format({ mode = "symbol_text" }) }
+      o.experimental = { ghost_text = true }
+      o.mapping = cmp.mapping.preset.insert({
+        ["<CR>"] = cmp.mapping.confirm({ select = true }),
+      })
+      return o
     end,
   },
 }
 EOF
 
-
-###############################################################
-# 6) CMP (VSCODE-STYLE AUTOCOMPLETE)
-###############################################################
-cat > ~/.config/nvim/lua/plugins/cmp.lua <<'EOF'
-return {
-  "hrsh7th/nvim-cmp",
-  dependencies = {
-    "hrsh7th/cmp-nvim-lsp",
-    "hrsh7th/cmp-path",
-    "hrsh7th/cmp-buffer",
-    "L3MON4D3/LuaSnip",
-    "onsails/lspkind.nvim",
-  },
-  opts = function(_, opts)
-    local cmp = require("cmp")
-    local lspkind = require("lspkind")
-    opts.sources = cmp.config.sources({
-      { name = "nvim_lsp", priority = 1000 },
-      { name = "path", priority = 700 },
-      { name = "buffer", priority = 300 },
-    })
-    opts.mapping = cmp.mapping.preset.insert({
-      ["<CR>"] = cmp.mapping.confirm({ select = true }),
-    })
-    opts.formatting = {
-      format = lspkind.cmp_format({ mode = "symbol_text" }),
-    }
-    opts.experimental = { ghost_text = true }
-    return opts
-  end,
-}
-EOF
-
-
-###############################################################
-# 7) TREESITTER + THEMES + C++ EXTENSIONS
-###############################################################
-cat > ~/.config/nvim/lua/plugins/ui_cpp_py.lua <<'EOF'
+# -----------------------------------------------------------------------------
+# UI + Treesitter + Theme
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/plugins/ui_all.lua <<'EOF'
 return {
   {
     "nvim-treesitter/nvim-treesitter",
     opts = {
-      ensure_installed = { "cpp","c","python","comment","regex","json","lua" },
+      ensure_installed = { "cpp","c","python","lua","json","comment","regex" },
       highlight = { enable = true },
       indent = { enable = true },
     },
   },
   { "p00f/clangd_extensions.nvim", config = function() require("clangd_extensions").setup() end },
-  { "Mofiqul/vscode.nvim", priority = 1000,
-    config = function() require("vscode").setup({}) vim.cmd("colorscheme vscode") end },
-}
-EOF
-
-
-###############################################################
-# 8) ASIO EXTRA SYNTAX
-###############################################################
-cat > ~/.config/nvim/after/syntax/cpp.vim <<'EOF'
-syn keyword cppAsio ASIO_NODISCARD ASIO_INITFN_RESULT_TYPE ASIO_CONSTEXPR ASIO_DEFAULT_COMPLETION_TOKEN_TYPE
-hi def link cppAsio Keyword
-EOF
-
-
-###############################################################
-# 9) FIXED FLOATING RUNNER (NO AUTO-CLOSE)
-###############################################################
-cat > ~/.config/nvim/lua/user/runner.lua <<'EOF'
-local M = {}
-
-local function detect_python()
-  local v = os.getenv("VIRTUAL_ENV")
-  if v then return v .. "/bin/python" end
-  local c = os.getenv("CONDA_PREFIX")
-  if c then return c .. "/bin/python" end
-  local ex = vim.fn.exepath("python3")
-  if ex ~= "" then return ex end
-  return "python3"
-end
-
-local function create_float_term(cmd)
-  local opts = {
-    relative = "editor",
-    width = math.floor(vim.o.columns * 0.9),
-    height = math.floor(vim.o.lines * 0.9),
-    row = math.floor(vim.o.lines * 0.05),
-    col = math.floor(vim.o.columns * 0.05),
-    border = "rounded",
-  }
-  local buf = vim.api.nvim_create_buf(false, true)
-  vim.api.nvim_open_win(buf, true, opts)
-
-  vim.fn.termopen(cmd)
-
-  vim.keymap.set("t", "<Esc>", [[<C-\><C-n>:q<CR>]], {
-    buffer = buf,
-    silent = true,
-  })
-end
-
-local function build_cmd()
-  local file = vim.fn.expand("%:p")
-  local ext = vim.fn.expand("%:e")
-
-  if ext == "cpp" or ext == "cc" or ext == "cxx" then
-    return string.format('sh -lc \'g++ "%s" -std=c++20 -O2 -Wall -Wextra -o /tmp/a.out && /tmp/a.out\'', file)
-  elseif ext == "c" then
-    return string.format('sh -lc \'gcc "%s" -O2 -Wall -Wextra -o /tmp/a.out && /tmp/a.out\'', file)
-  elseif ext == "py" then
-    return string.format('%s "%s"', detect_python(), file)
-  else
-    return nil
-  end
-end
-
-function M.run_float()
-  local cmd = build_cmd()
-  if cmd then create_float_term(cmd) end
-end
-
-function M.run_float_interactive()
-  local cmd = build_cmd()
-  if cmd then create_float_term(cmd) end
-end
-
-return M
-EOF
-
-
-###############################################################
-# 10) KEYBINDINGS (SPACE+r, SPACE+R, CTRL+r)
-###############################################################
-cat > ~/.config/nvim/lua/plugins/runner_keys.lua <<'EOF'
-return {
   {
-    "AstroNvim/astrocore",
-    opts = function(_, opts)
-      local runner = require("user.runner")
-      opts.mappings = opts.mappings or {}
-      opts.mappings.n = opts.mappings.n or {}
-      opts.mappings.n["<leader>r"] = { function() runner.run_float() end, desc = "Run File" }
-      opts.mappings.n["<leader>R"] = { function() runner.run_float_interactive() end, desc = "Run Interactive" }
-      opts.mappings.n["<C-r>"]    = { function() runner.run_float() end, desc = "Run File" }
-      return opts
+    "folke/tokyonight.nvim",
+    priority = 1000,
+    config = function()
+      require("tokyonight").setup({
+        style = "night",
+        terminal_colors = true,
+        styles = { comments = { italic = true }, keywords = { italic = true } },
+      })
+      vim.cmd("colorscheme tokyonight-night")
     end,
   },
 }
 EOF
 
+# -----------------------------------------------------------------------------
+# Indentation helpers
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/plugins/indent.lua <<'EOF'
+return {
+  { "nmac427/guess-indent.nvim", config = function() require("guess-indent").setup({ auto_cmd = true }) end },
+  { "lukas-reineke/indent-blankline.nvim", main = "ibl", opts = { indent = { char = "│" } } },
+}
+EOF
 
-###############################################################
-# 11) SYNC EVERYTHING
-###############################################################
-nvim --headless "+Lazy! sync" +qa
-nvim --headless "+TSUpdate" +qa
+# -----------------------------------------------------------------------------
+# Telescope (for fuzzy terminal picker)
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/plugins/telescope_term.lua <<'EOF'
+return {
+  { "nvim-lua/plenary.nvim" },
+  {
+    "nvim-telescope/telescope.nvim",
+    tag = "0.1.6",
+    dependencies = { "nvim-lua/plenary.nvim" },
+  },
+}
+EOF
+
+# -----------------------------------------------------------------------------
+# VSCode-like nav (hover/signature) + robust peek wrapper module
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/plugins/lsp_ui.lua <<'EOF'
+return {
+  {
+    "nvimdev/lspsaga.nvim",
+    event = "LspAttach",
+    config = function()
+      require("lspsaga").setup({
+        lightbulb = { enable = true, sign = true, virtual_text = true },
+        ui = { border = "rounded" },
+      })
+    end,
+    dependencies = {
+      "nvim-tree/nvim-web-devicons",
+      "nvim-treesitter/nvim-treesitter",
+    },
+  },
+  {
+    "ray-x/lsp_signature.nvim",
+    event = "VeryLazy",
+    config = function()
+      require("lsp_signature").setup({
+        bind = true, floating_window = true, hint_enable = false, handler_opts = { border = "rounded" },
+      })
+    end,
+  },
+}
+EOF
+
+cat > ~/.config/nvim/lua/user/peek.lua <<'EOF'
+local M = {}
+function M.peek_definition()
+  -- Try multiple lspsaga APIs; fallback to lsp.buf.definition()
+  local ok, mod
+  ok, mod = pcall(require, "lspsaga.definition")
+  if ok and type(mod) == "table" and mod.peek_definition then
+    return mod.peek_definition()
+  end
+  ok, mod = pcall(require, "lspsaga.provider")
+  if ok and type(mod) == "table" and mod.preview_definition then
+    return mod.preview_definition()
+  end
+  ok, mod = pcall(require, "lspsaga.hover")
+  if ok and type(mod) == "table" and mod.peek_definition then
+    return mod.peek_definition()
+  end
+  -- Fallback: open definition in split as "peek-like"
+  vim.cmd("vsplit")
+  vim.lsp.buf.definition()
+end
+return M
+EOF
+
+# -----------------------------------------------------------------------------
+# IPython per-file kernels (env select, rename, restart, run selection)
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/user/python_ipy.lua <<'EOF'
+local M,terms,envs = {}, {}, {}
+
+local function detect_env()
+  local c = os.getenv("CONDA_PREFIX"); if c and #c>0 then return c.."/bin/python" end
+  local v = os.getenv("VIRTUAL_ENV"); if v and #v>0 then return v.."/bin/python" end
+  return vim.fn.exepath("python3")
+end
+local function get_env(b) return envs[b] or detect_env() end
+local function set_env(b,p) envs[b] = p; vim.notify("Python env → "..p) end
+
+local function ensure_term(b)
+  local e = terms[b]
+  if e and e.job and vim.fn.jobwait({ e.job }, 0)[1] == -1 then return e end
+  local T = require("toggleterm.terminal").Terminal
+  local py = get_env(b)
+  local label = (e and e.name) or ("ipython:"..vim.fn.fnamemodify(vim.api.nvim_buf_get_name(b), ":t"))
+  local t = T:new({
+    cmd = py.." -m IPython --no-autoindent",
+    hidden = true, direction = "horizontal", close_on_exit = false,
+    on_open = function(term) term:set_title(label) end,
+  })
+  t:spawn()
+  terms[b] = { term = t, job = t.job_id, name = label }
+  vim.notify("Started IPython for buffer "..b.." ("..label..")")
+  return terms[b]
+end
+
+local function normalize_block(lines)
+  local s,e = 1,#lines
+  while s<=e and (lines[s]:match("^%s*$") ~= nil) do s = s + 1 end
+  while e>=s and (lines[e]:match("^%s*$") ~= nil) do e = e - 1 end
+  local out = {}
+  for i=s,e do table.insert(out, lines[i]) end
+  if #out == 0 then return "\n" end
+  return table.concat(out, "\n").."\n"
+end
+
+local function get_visual_lines()
+  local b = vim.api.nvim_get_current_buf()
+  local ls = vim.fn.getpos("'<")[2]
+  local le = vim.fn.getpos("'>")[2]
+  return vim.api.nvim_buf_get_lines(b, ls-1, le, false)
+end
+
+function M.RunSelection()
+  local b = vim.api.nvim_get_current_buf()
+  local e = ensure_term(b)
+  local block = normalize_block(get_visual_lines())
+  vim.fn.chansend(e.job, block)
+end
+function M.OpenIPy() ensure_term(vim.api.nvim_get_current_buf()).term:toggle() end
+function M.Restart()
+  local b = vim.api.nvim_get_current_buf()
+  local e = terms[b]
+  if e and e.job then vim.fn.jobstop(e.job) end
+  terms[b] = nil
+  ensure_term(b)
+  vim.notify("Restarted IPython kernel")
+end
+function M.Rename()
+  local b = vim.api.nvim_get_current_buf()
+  local e = ensure_term(b)
+  vim.ui.input({ prompt = "Kernel name: ", default = e.name or "" }, function(input)
+    if not input or #input == 0 then return end
+    e.name = input; e.term:set_title(input)
+    vim.notify("Kernel renamed → "..input)
+  end)
+end
+
+function M.SelectEnv()
+  local b = vim.api.nvim_get_current_buf()
+  local choices = {}
+  local function push(label,path)
+    if path and #path>0 and vim.fn.executable(path) == 1 then
+      table.insert(choices, { label = label, path = path })
+    end
+  end
+  push("Current buffer env", get_env(b))
+  push("System python3", vim.fn.exepath("python3"))
+  if vim.fn.executable("conda") == 1 then
+    local json = vim.fn.systemlist("conda env list --json")[1]
+    if json and #json > 0 then
+      local ok, parsed = pcall(vim.fn.json_decode, json)
+      if ok and parsed and parsed.envs then
+        for _, p in ipairs(parsed.envs) do
+          push("conda: "..(p:match("([^/]+)$") or p), p.."/bin/python")
+        end
+      end
+    end
+  end
+  local vroot = os.getenv("HOME").."/.virtualenvs"
+  if vim.fn.isdirectory(vroot) == 1 then
+    for _, py in ipairs(vim.fn.globpath(vroot, "*/bin/python", false, true)) do
+      push("venv: "..(py:match(".*/([^/]+)/bin/python$") or py), py)
+    end
+  end
+  table.insert(choices, { label = "[Enter custom path...]", path = "" })
+
+  local P = require("telescope.pickers")
+  local F = require("telescope.finders")
+  local C = require("telescope.config").values
+  local A = require("telescope.actions")
+  local S = require("telescope.actions.state")
+  P.new({}, {
+    prompt_title = "Select Python Environment",
+    finder = F.new_table({
+      results = choices,
+      entry_maker = function(i)
+        local d = i.path ~= "" and (i.label.." → "..i.path) or i.label
+        return { value = i, display = d, ordinal = d }
+      end
+    }),
+    sorter = C.generic_sorter({}),
+    attach_mappings = function(_, map)
+      local function sel(pb)
+        local entry = S.get_selected_entry().value
+        A.close(pb)
+        if entry.path == "" then
+          vim.ui.input({ prompt = "Full path to python: ", default = get_env(b) }, function(inp)
+            if inp and #inp > 0 then set_env(b, inp); M.Restart() end
+          end)
+        else
+          set_env(b, entry.path); M.Restart()
+        end
+      end
+      map("i", "<CR>", sel); map("n", "<CR>", sel); return true
+    end,
+  }):find()
+end
+
+vim.api.nvim_create_user_command("PythonEnvSelect", M.SelectEnv, {})
+vim.api.nvim_create_user_command("PythonKernelRestart", M.Restart, {})
+vim.api.nvim_create_user_command("PythonKernelOpen", M.OpenIPy, {})
+vim.api.nvim_create_user_command("PythonKernelRename", M.Rename, {})
+
+return M
+EOF
+
+# -----------------------------------------------------------------------------
+# Terminal Registry (shared across modules)
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/user/term_registry.lua <<'EOF'
+local R = { list = {} }
+function R.register(t)
+  for _,x in ipairs(R.list) do if x == t then return end end
+  table.insert(R.list, t)
+end
+function R.unregister(t)
+  local n = {}
+  for _,x in ipairs(R.list) do if x ~= t then table.insert(n, x) end end
+  R.list = n
+end
+function R.all() return R.list end
+return R
+EOF
+
+# -----------------------------------------------------------------------------
+# Floating terminals + :Tmux + toggles + minimize/switch/kill + Alt+o return-to-panel
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/plugins/tmux_float.lua <<'EOF'
+return {
+  {
+    "akinsho/toggleterm.nvim",
+    version = "*",
+    config = function()
+      require("toggleterm").setup({
+        hide_numbers = true, shade_terminals = true, shading_factor = 2,
+        direction = "float", float_opts = { border = "rounded", winblend = 0 },
+      })
+      local T = require("toggleterm.terminal").Terminal
+      local REG = require("user.term_registry")
+      local TM  = require("user.term_manager")
+
+      local term1 = T:new({ direction="float", hidden=true, on_open=function(t) REG.register(t) end })
+      local term2 = T:new({ direction="float", hidden=true, on_open=function(t) REG.register(t) end })
+      local terminals = { term1, term2 }; local current = 1
+
+      local function toggle_main() current=1; term1:toggle() end
+      local function toggle_second() current=2; term2:toggle() end
+      local function minimize() terminals[current]:close() end
+      local function kill_all()
+        for _,t in ipairs(REG.all()) do pcall(function() t:shutdown() end) end
+      end
+      local function next_term() minimize(); current = current % #terminals + 1; terminals[current]:toggle() end
+      local function prev_term() minimize(); current = (current - 2) % #terminals + 1; terminals[current]:toggle() end
+
+      -- Keymaps: NEVER conflict with tmux
+      vim.keymap.set("n","<A-t>",toggle_main,{desc="Toggle main float term"})
+      vim.keymap.set("n","<A-T>",toggle_second,{desc="Toggle second float term"})
+      vim.keymap.set("t","<A-t>",function() vim.cmd("stopinsert"); toggle_main() end)
+      vim.keymap.set("t","<A-T>",function() vim.cmd("stopinsert"); toggle_second() end)
+      vim.keymap.set("t","<Esc>",[[<C-\><C-n>]],{desc="Exit term to normal"})
+      vim.keymap.set({"n","t"},"<A-m>",minimize,{desc="Minimize float term"})
+      vim.keymap.set("t","<C-q>",[[<C-\><C-n>:close<CR>]],{desc="Close float term"})
+      vim.keymap.set("n","<A-Right>",next_term,{desc="Next float term"})
+      vim.keymap.set("n","<A-Left>",prev_term,{desc="Prev float term"})
+      vim.keymap.set("n","<A-x>",kill_all,{desc="Kill all float terms"})
+
+      -- Alt+o: close current float (if any) and reopen panel (remembered)
+      vim.keymap.set("t","<A-o>",function()
+        vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("<C-\\><C-n>", true, false, true), "t", false)
+        pcall(vim.cmd, "close")
+        TM.open_panel(true) -- 'true' means keep last selection
+      end,{desc="Close float & open terminal panel"})
+
+      -- :Tmux <session>
+      vim.api.nvim_create_user_command("Tmux", function(opts)
+        local sess = opts.args
+        if sess == "" then vim.notify("Usage: :Tmux <session>", vim.log.levels.ERROR); return end
+        local t = T:new({
+          cmd = "tmux attach -t " .. sess, hidden = false, direction="float",
+          on_open=function(term) REG.register(term) end,
+        })
+        t:toggle()
+      end, { nargs = 1 })
+    end,
+  },
+}
+EOF
+
+# -----------------------------------------------------------------------------
+# Terminal Manager: Panel (j/k + Enter open + l preview + x kill + 1..9) with UNFOCUSABLE preview
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/user/term_manager.lua <<'EOF'
+local M = {}
+local REG = require("user.term_registry")
+
+local list_buf, list_win, prev_win
+local sel = 1
+local last_sel = 1
+
+local function close_win(win)
+  if win and vim.api.nvim_win_is_valid(win) then pcall(vim.api.nvim_win_close, win, true) end
+end
+local function close_buf(buf)
+  if buf and vim.api.nvim_buf_is_valid(buf) then pcall(vim.api.nvim_buf_delete, buf, { force = true }) end
+end
+
+local function terminals()
+  local all = REG.all()
+  local entries = {}
+  for i, t in ipairs(all) do
+    local bid = t.bufnr or t.bufid or 0
+    local title = t._title or t.name or ("term "..i)
+    table.insert(entries, { idx = i, term = t, buf = bid, title = title })
+  end
+  return entries
+end
+
+local function redraw()
+  if not (list_buf and vim.api.nvim_buf_is_valid(list_buf)) then return end
+  local ents = terminals()
+  if #ents == 0 then
+    vim.api.nvim_buf_set_lines(list_buf, 0, -1, false, { "No terminals. q to close." })
+    return
+  end
+  if sel > #ents then sel = #ents end
+  if sel < 1 then sel = 1 end
+  local lines = {}
+  for i, e in ipairs(ents) do
+    local prefix = (i == sel) and "→ " or "  "
+    local label = string.format("%d) %s", i, e.title)
+    table.insert(lines, prefix .. label)
+  end
+  vim.api.nvim_buf_set_lines(list_buf, 0, -1, false, lines)
+end
+
+local function show_preview(force)
+  -- Only preview on demand (l) or when forced (initial)
+  if force ~= true and not vim.g.__tm_preview_requested then return end
+  close_win(prev_win)
+  local ents = terminals()
+  local e = ents[sel]; if not e or not e.buf or e.buf == 0 then return end
+  if not vim.api.nvim_buf_is_valid(e.buf) then return end
+
+  local cols, lines = vim.o.columns, vim.o.lines
+  local width = math.floor(cols * 0.62)
+  local height = math.floor(lines * 0.86)
+  local row = math.floor(lines * 0.07)
+  local col = math.floor(cols * 0.36)
+  prev_win = vim.api.nvim_open_win(e.buf, false, { -- focus = false
+    relative="editor", style="minimal", border="rounded",
+    width=width, height=height, row=row, col=col,
+    focusable=false, noautocmd=true, zindex=50,
+  })
+  vim.api.nvim_set_option_value("number", false, { win = prev_win })
+  vim.api.nvim_set_option_value("relativenumber", false, { win = prev_win })
+  vim.api.nvim_set_option_value("cursorline", false, { win = prev_win })
+end
+
+local function move(delta)
+  local ents = terminals()
+  if #ents == 0 then return end
+  sel = sel + delta
+  if sel < 1 then sel = #ents end
+  if sel > #ents then sel = 1 end
+  redraw()
+  -- do NOT auto preview on j/k; user triggers preview with 'l'
+end
+
+local function open_selected()
+  local ents = terminals(); local e = ents[sel]; if not e then return end
+  last_sel = sel
+  -- Close the panel (C behavior), open terminal
+  if list_win and vim.api.nvim_win_is_valid(list_win) then close_win(list_win) end
+  if prev_win and vim.api.nvim_win_is_valid(prev_win) then close_win(prev_win) end
+  list_buf, list_win, prev_win = nil, nil, nil
+  vim.g.__tm_preview_requested = false
+  pcall(function() e.term:toggle() end)
+end
+
+local function kill_selected()
+  local ents = terminals(); local e = ents[sel]; if not e then return end
+  pcall(function() e.term:shutdown() end)
+  redraw()
+  if vim.g.__tm_preview_requested then show_preview(true) end
+end
+
+function M.open_panel(keep_last)
+  local cols, lines = vim.o.columns, vim.o.lines
+  local width = math.floor(cols * 0.30)
+  const_height = math.floor(lines * 0.86)
+  local height = const_height
+  local row = math.floor(lines * 0.07)
+  local col = math.floor(cols * 0.04)
+
+  if keep_last and last_sel and last_sel > 0 then sel = last_sel end
+  vim.g.__tm_preview_requested = false
+
+  list_buf = vim.api.nvim_create_buf(false, true)
+  list_win = vim.api.nvim_open_win(list_buf, true, {
+    relative="editor", style="minimal", border="rounded",
+    width=width, height=height, row=row, col=col,
+    focusable=true, noautocmd=true, zindex=60,
+  })
+  vim.api.nvim_set_option_value("number", false, { win = list_win })
+  vim.api.nvim_set_option_value("relativenumber", false, { win = list_win })
+  vim.api.nvim_set_option_value("cursorline", true, { win = list_win })
+
+  redraw()
+  -- initial preview off; user presses 'l' to preview
+  -- show_preview(true)  -- intentionally not auto-previewing
+  local function close_all()
+    close_win(prev_win); close_win(list_win); close_buf(list_buf)
+    list_buf=nil; list_win=nil; prev_win=nil
+    vim.g.__tm_preview_requested = false
+  end
+  local opts = { buffer = list_buf, nowait = true, silent = true }
+  vim.keymap.set("n","q",close_all,opts)
+  vim.keymap.set("n","<Esc>",close_all,opts)
+  vim.keymap.set("n","j",function() move(1) end,opts)
+  vim.keymap.set("n","k",function() move(-1) end,opts)
+  -- 'l' -> preview only (unfocusable)
+  vim.keymap.set("n","l",function() vim.g.__tm_preview_requested = true; show_preview(true) end,opts)
+  -- 'h' -> close preview and keep selector
+  vim.keymap.set("n","h",function() vim.g.__tm_preview_requested=false; close_win(prev_win) end,opts)
+  -- Enter -> open terminal (panel closes, remembered)
+  vim.keymap.set("n","<CR>",open_selected,opts)
+  -- kill selected
+  vim.keymap.set("n","x",function() kill_selected() end,opts)
+  -- numeric jump-open
+  for n=1,9 do
+    vim.keymap.set("n", tostring(n), function()
+      sel=n; redraw(); if vim.g.__tm_preview_requested then show_preview(true) end; open_selected()
+    end, opts)
+  end
+end
+
+return M
+EOF
+
+# -----------------------------------------------------------------------------
+# Terminal Quick Numeric Selector popup (<Space>tn)
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/user/term_quickpick.lua <<'EOF'
+local M = {}
+local REG = require("user.term_registry")
+
+function M.popup()
+  local list = REG.all()
+  if #list == 0 then vim.notify("No terminals open.") return end
+
+  local lines = {}
+  for i,t in ipairs(list) do
+    local name = t._title or t.name or ("term "..i)
+    table.insert(lines, string.format("%d) %s", i, name))
+  end
+
+  local cols, rows = vim.o.columns, vim.o.lines
+  local width = math.max(30, math.floor(cols * 0.3))
+  local height = math.min(#lines + 2, 15)
+  local row = math.floor((rows - height) / 2)
+  local col = math.floor((cols - width) / 2)
+
+  local buf = vim.api.nvim_create_buf(false, true)
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative="editor", style="minimal", border="rounded",
+    width=width, height=height, row=row, col=col,
+    focusable=true, noautocmd=true, zindex=70,
+  })
+
+  local function close() if vim.api.nvim_win_is_valid(win) then vim.api.nvim_win_close(win, true) end end
+  local opts = { buffer = buf, nowait = true, silent = true }
+  vim.keymap.set("n","q",close,opts)
+  vim.keymap.set("n","<Esc>",close,opts)
+
+  for n=1,9 do
+    vim.keymap.set("n", tostring(n), function()
+      close()
+      if list[n] then pcall(function() list[n]:toggle() end) end
+    end, opts)
+  end
+end
+
+return M
+EOF
+
+# -----------------------------------------------------------------------------
+# Telescope fuzzy picker for terminals (<Space>tt)
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/user/term_telescope.lua <<'EOF'
+local M = {}
+local REG = require("user.term_registry")
+
+function M.pick()
+  local list = REG.all()
+  if #list == 0 then vim.notify("No terminals open.") return end
+  local items = {}
+  for i,t in ipairs(list) do
+    local name = t._title or t.name or ("term "..i)
+    table.insert(items, { idx = i, name = name, term = t })
+  end
+
+  local pickers = require("telescope.pickers")
+  local finders = require("telescope.finders")
+  local conf = require("telescope.config").values
+  local actions = require("telescope.actions")
+  local state = require("telescope.actions.state")
+
+  pickers.new({}, {
+    prompt_title = "Terminals",
+    finder = finders.new_table({
+      results = items,
+      entry_maker = function(i)
+        local disp = string.format("%d) %s", i.idx, i.name)
+        return { value = i, display = disp, ordinal = disp }
+      end,
+    }),
+    sorter = conf.generic_sorter({}),
+    attach_mappings = function(_, map)
+      local function open_current(pbuf)
+        local sel = state.get_selected_entry().value
+        actions.close(pbuf)
+        pcall(function() sel.term:toggle() end)
+      end
+      map("i","<CR>",open_current)
+      map("n","<CR>",open_current)
+      return true
+    end,
+  }):find()
+end
+
+return M
+EOF
+
+# -----------------------------------------------------------------------------
+# Runner (C/C++/Python) with float window
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/user/runner.lua <<'EOF'
+local M = {}
+local function detect_python()
+  local v = os.getenv("VIRTUAL_ENV"); if v then return v.."/bin/python" end
+  local c = os.getenv("CONDA_PREFIX"); if c then return c.."/bin/python" end
+  return vim.fn.exepath("python3")
+end
+local function float_term(cmd)
+  local o = { relative="editor", width=math.floor(vim.o.columns*0.9), height=math.floor(vim.o.lines*0.9),
+    row=math.floor(vim.o.lines*0.05), col=math.floor(vim.o.columns*0.05), border="rounded" }
+  local b = vim.api.nvim_create_buf(false,true); vim.api.nvim_open_win(b,true,o)
+  vim.fn.termopen(cmd); vim.keymap.set("t","<Esc>",[[<C-\><C-n>:q<CR>]],{buffer=b})
+end
+function M.run_full()
+  local f = vim.fn.expand("%:p"); local e = vim.fn.expand("%:e")
+  if e == "py" then float_term(detect_python() .. " \"" .. f .. "\""); return end
+  if e == "cpp" or e == "cc" or e == "cxx" then
+    local o = "/tmp/a.out"; local cmd = string.format('sh -lc \'g++ "%s" -std=c++20 -O2 -Wall -Wextra -o %s && %s\'', f, o, o)
+    float_term(cmd); return
+  end
+  if e == "c" then
+    local o = "/tmp/a.out"; local cmd = string.format('sh -lc \'gcc "%s" -O2 -Wall -Wextra -o %s && %s\'', f, o, o)
+    float_term(cmd); return
+  end
+  vim.notify("No runner for *."..e)
+end
+return M
+EOF
+
+# -----------------------------------------------------------------------------
+# DAP (debugpy + codelldb) + UI + virtual text
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/plugins/dap_all.lua <<'EOF'
+return {
+  "mfussenegger/nvim-dap",
+  dependencies = {
+    "rcarriga/nvim-dap-ui",
+    "theHamsta/nvim-dap-virtual-text",
+    "williamboman/mason.nvim",
+    "jay-babu/mason-nvim-dap.nvim",
+  },
+  config = function()
+    local dap = require("dap")
+    local dapui = require("dapui")
+    dapui.setup()
+    require("nvim-dap-virtual-text").setup()
+    dap.listeners.after.event_initialized["dapui_config"] = function() dapui.open() end
+    dap.listeners.before.event_terminated["dapui_config"] = function() dapui.close() end
+    dap.listeners.before.event_exited["dapui_config"]      = function() dapui.close() end
+
+    require("mason-nvim-dap").setup({
+      automatic_installation = true,
+      ensure_installed = { "python", "codelldb" },
+      handlers = {
+        function(config) require("mason-nvim-dap").default_setup(config) end,
+        python = function(config)
+          require("mason-nvim-dap").default_setup(config)
+          local py = vim.fn.exepath("python3")
+          dap.adapters.python = dap.adapters.python or {
+            type = "executable", command = py, args = { "-m", "debugpy.adapter" },
+          }
+          dap.configurations.python = {
+            {
+              type = "python", request = "launch", name = "Launch file", program = "${file}",
+              console = "integratedTerminal",
+              pythonPath = function()
+                local v = os.getenv("VIRTUAL_ENV"); if v then return v.."/bin/python" end
+                local c = os.getenv("CONDA_PREFIX"); if c then return c.."/bin/python" end
+                return vim.fn.exepath("python3")
+              end,
+            },
+          }
+        end,
+        codelldb = function(config)
+          require("mason-nvim-dap").default_setup(config)
+          dap.configurations.cpp = {
+            {
+              name = "Launch (codelldb)", type = "codelldb", request = "launch",
+              program = function() return vim.fn.input("Path to executable: ", vim.fn.getcwd().."/a.out", "file") end,
+              cwd = "${workspaceFolder}", stopOnEntry = false, args = {},
+            },
+          }
+          dap.configurations.c = dap.configurations.cpp
+        end,
+      },
+    })
+  end,
+}
+EOF
+
+# -----------------------------------------------------------------------------
+# Keymaps: IPython, Runner, LSP nav, DAP, Terminal System (tm/tn/tt) + robust peek
+# -----------------------------------------------------------------------------
+cat > ~/.config/nvim/lua/plugins/runner_keys.lua <<'EOF'
+return {
+  {
+    "AstroNvim/astrocore",
+    opts = function(_, o)
+      local ipy = require("user.python_ipy")
+      local run = require("user.runner")
+      local dap = require("dap")
+      local dapui = require("dapui")
+      local TM = require("user.term_manager")
+      local TQ = require("user.term_quickpick")
+      local TP = require("user.term_telescope")
+      local PEEK = require("user.peek")
+
+      o.mappings = o.mappings or {}
+      o.mappings.n = o.mappings.n or {}
+      o.mappings.x = o.mappings.x or {}
+
+      -- IPython
+      o.mappings.x["<leader>r"] = { function() ipy.RunSelection() end, desc = "IPython: Run selection" }
+      o.mappings.n["<leader>i"] = { function() ipy.OpenIPy() end,     desc = "IPython: Open/Focus" }
+      o.mappings.n["<leader>k"] = { function() ipy.Restart() end,     desc = "IPython: Restart kernel" }
+      o.mappings.n["<leader>e"] = { function() ipy.SelectEnv() end,   desc = "Python: Select environment" }
+      o.mappings.n["<C-k>"]     = { function() ipy.Rename() end,      desc = "IPython: Rename kernel label" }
+
+      -- Runner
+      o.mappings.n["<C-r>"]     = { function() run.run_full() end,    desc = "Run file (C/C++/Py)" }
+
+      -- LSP nav
+      o.mappings.n["<leader>h"] = { function() vim.lsp.buf.hover() end, desc = "LSP Hover" }
+      o.mappings.n["gd"]        = { function() vim.lsp.buf.definition() end, desc = "Goto Definition" }
+      o.mappings.n["gr"]        = { function() vim.lsp.buf.references() end, desc = "References" }
+      o.mappings.n["<leader>p"] = { function() PEEK.peek_definition() end, desc = "Peek Definition (robust)" }
+
+      -- DAP
+      o.mappings.n["<F5>"]      = { function() dap.continue() end,            desc = "DAP Continue" }
+      o.mappings.n["<F9>"]      = { function() dap.toggle_breakpoint() end,   desc = "DAP Toggle Breakpoint" }
+      o.mappings.n["<leader>db"]= { function()
+        vim.ui.input({prompt="Breakpoint condition: "}, function(cond) if cond then dap.set_breakpoint(cond) end end)
+      end, desc = "DAP Conditional BP" }
+      o.mappings.n["<F10>"]     = { function() dap.step_over() end,           desc = "DAP Step Over" }
+      o.mappings.n["<F11>"]     = { function() dap.step_into() end,           desc = "DAP Step Into" }
+      o.mappings.n["<F12>"]     = { function() dap.step_out() end,            desc = "DAP Step Out" }
+      o.mappings.n["<leader>du"]= { function() dapui.toggle() end,            desc = "DAP UI Toggle" }
+      o.mappings.n["<leader>dr"]= { function() dap.repl.open() end,           desc = "DAP REPL" }
+
+      -- Terminal Manager (ALL FLOAT) — Option D hybrid
+      o.mappings.n["<leader>tm"] = { function() TM.open_panel(true) end, desc = "Terminal Manager (panel+preview)" }
+      o.mappings.n["<leader>tn"] = { function() TQ.popup() end,          desc = "Terminal Quick Numeric Selector" }
+      o.mappings.n["<leader>tt"] = { function() TP.pick() end,           desc = "Terminal Telescope Picker" }
+
+      return o
+    end,
+  },
+}
+EOF
+
+# -----------------------------------------------------------------------------
+# Final plugin sync (ignore harmless headless segfaults)
+# -----------------------------------------------------------------------------
+echo "==> Syncing plugins (safe to ignore segfaults here)..."
+nvim --headless "+Lazy! sync" +qa || true
+nvim --headless "+TSUpdate" +qa || true
+
+echo "✅ INSTALL COMPLETE!"
+echo "Theme: TokyoNight • LSP: clangd/basedpyright • DAP: debugpy+codelldb"
+echo "Floating Terminals: Alt+t / Alt+T (toggle) | Alt+m (minimize) | Alt+←/→ (switch) | Alt+x (kill all)"
+echo "Panel: <Space>tm (j/k move, l preview, h hide preview, Enter open, x kill, 1..9 jump-open, q/Esc close)"
+echo "Quick: <Space>tn (numeric popup), <Space>tt (telescope)"
+echo "Peek: <Space>p (robust lspsaga wrapper). Alt+o inside terminal: close & reopen panel."
